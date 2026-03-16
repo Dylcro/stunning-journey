@@ -1,0 +1,96 @@
+import logging
+import os
+import re
+from typing import Optional
+
+from telegram import Update
+from telegram.ext import Application, ContextTypes, MessageHandler, filters
+
+logging.basicConfig(level=logging.INFO)
+
+SIGNAL_PATTERN = re.compile(r"^\s*(?:(XAU|XAUUSD)\s+)?(BUY|SELL)\s+(\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
+SHORTCUT_PATTERN = re.compile(r"^\s*(XB|XS)\s+(\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
+
+def format_number(v):
+    if float(v).is_integer():
+        return str(int(v))
+    return f"{v:.10f}".rstrip("0").rstrip(".")
+
+def normalize_symbol(symbol):
+    symbol = symbol.upper().strip()
+    if symbol == "XAU":
+        return "XAUUSD"
+    return symbol
+
+def build_signal(side, price, symbol=""):
+    side = side.upper()
+    symbol = normalize_symbol(symbol)
+
+    if side == "BUY":
+        entry2 = price - 6
+        sl = price - 10
+        tp1, tp2, tp3, tp4 = price+2, price+4, price+6, price+8
+    else:
+        entry2 = price + 6
+        sl = price + 10
+        tp1, tp2, tp3, tp4 = price-2, price-4, price-6, price-8
+
+    first = f"{side} {format_number(price)}/{format_number(entry2)}"
+    if symbol:
+        first = f"{symbol} {first}"
+
+    return "\n".join([
+        first,
+        f"SL {format_number(sl)}",
+        "",
+        f"TP1 - {format_number(tp1)}",
+        f"TP2 - {format_number(tp2)}",
+        f"TP3 - {format_number(tp3)}",
+        f"TP4 - {format_number(tp4)}",
+        "TP5 - open"
+    ])
+
+def parse_signal(text):
+    m = SHORTCUT_PATTERN.match(text)
+    if m:
+        price=float(m.group(2))
+        if m.group(1).upper()=="XB":
+            return "XAUUSD","BUY",price
+        if m.group(1).upper()=="XS":
+            return "XAUUSD","SELL",price
+
+    m = SIGNAL_PATTERN.match(text)
+    if not m:
+        return None
+    symbol=(m.group(1) or "").upper()
+    side=m.group(2).upper()
+    price=float(m.group(3))
+    return symbol,side,price
+
+async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not update.message: return
+    parsed=parse_signal(update.message.text)
+    if not parsed: return
+    symbol,side,price=parsed
+    msg=build_signal(side,price,symbol)
+
+    target=os.getenv("TELEGRAM_TARGET_CHAT_ID","").strip()
+    if target:
+        await context.bot.send_message(chat_id=target,text=msg)
+        await update.message.reply_text("Posted.")
+    else:
+        await update.message.reply_text(msg)
+
+def main():
+    token=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
+    if not token:
+        raise RuntimeError("Add TELEGRAM_BOT_TOKEN env variable")
+
+    app=Application.builder().token(token).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle))
+
+    print("Bot running...")
+    app.run_polling()
+
+if __name__=="__main__":
+    main()
